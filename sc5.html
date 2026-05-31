@@ -3501,6 +3501,17 @@
             throw new Error(`Directory '${name}' not found.`);
         }
 
+        async function hasVideosInDir(dirHandle) {
+            try {
+                for await (const entry of dirHandle.values()) {
+                    if (entry.kind === 'file' && entry.name.match(/\.(mp4|avi|mov|mkv)$/i)) {
+                        return true;
+                    }
+                }
+            } catch (e) {}
+            return false;
+        }
+
         function setVisibilityForMode(mode) {
             const checkboxContainers = document.querySelectorAll('.checkbox-container');
 
@@ -4956,7 +4967,10 @@
                 } catch (e) {
                     try {
                         await dirHandle.getFileHandle('scdate.txt');
-                        isProject = true;
+                        // Only consider scdate.txt a project marker if it's not the root or it has videos
+                        if (currentPath !== '' || (await hasVideosInDir(dirHandle))) {
+                            isProject = true;
+                        }
                     } catch (e2) {}
                 }
 
@@ -5005,7 +5019,14 @@
             try {
                 await findDirectoryHandleByName(currentDirHandle, 'Edit Thumbnails');
                 isProject = true;
-            } catch (e) {}
+            } catch (e) {
+                try {
+                    await currentDirHandle.getFileHandle('scdate.txt');
+                    if (await hasVideosInDir(currentDirHandle)) {
+                        isProject = true;
+                    }
+                } catch (e2) {}
+            }
 
             let rootScData = new Map();
             let currentDirScData = new Map();
@@ -5564,7 +5585,7 @@
                             }
                         }
 
-                        if (true) {
+                        if (landscapeFiles.length >= 0) {
                              landscapeFiles.sort((a, b) => {
                                 const aNum = parseInt(a.name.substring(a.name.lastIndexOf('_') + 1));
                                 const bNum = parseInt(b.name.substring(b.name.lastIndexOf('_') + 1));
@@ -5758,7 +5779,10 @@
                 } catch (e) {
                     try {
                         await dirHandle.getFileHandle('scdate.txt');
-                        isProject = true;
+                        // Only consider scdate.txt a project marker if it's not the root or it has videos
+                        if (currentPath !== '' || (await hasVideosInDir(dirHandle))) {
+                            isProject = true;
+                        }
                     } catch (e2) {}
                 }
 
