@@ -4953,7 +4953,12 @@
                 try {
                     await findDirectoryHandleByName(dirHandle, 'Edit Thumbnails');
                     isProject = true;
-                } catch (e) {}
+                } catch (e) {
+                    try {
+                        await dirHandle.getFileHandle('scdate.txt');
+                        isProject = true;
+                    } catch (e2) {}
+                }
 
                 allDiscoveredFolders.push({
                     handle: dirHandle,
@@ -5194,13 +5199,15 @@
                     await findVideos(project.handle);
                     allVideoFiles.push(...projectVideoFiles);
 
-                    const editDirHandle = await findDirectoryHandleByName(project.handle, 'Edit Thumbnails');
-                    const landscapeFiles = [];
-                     for await (const entry of editDirHandle.values()) {
-                        if (entry.kind === 'file' && entry.name.match(/\.(jpe?g|png|gif|webp)$/i)) {
-                            landscapeFiles.push(await entry.getFile());
+                    let landscapeFiles = [];
+                    try {
+                        const editDirHandle = await findDirectoryHandleByName(project.handle, 'Edit Thumbnails');
+                        for await (const entry of editDirHandle.values()) {
+                            if (entry.kind === 'file' && entry.name.match(/\.(jpe?g|png|gif|webp)$/i)) {
+                                landscapeFiles.push(await entry.getFile());
+                            }
                         }
-                    }
+                    } catch (e) {}
 
                     const groupedFiles = landscapeFiles.reduce((acc, file) => {
                         const match = file.name.match(/^(.*?)_(\d+)\.[^.]+$/);
@@ -5214,7 +5221,10 @@
 
                     const videoFileMap = new Map(projectVideoFiles.map(f => [f.name.substring(0, f.name.lastIndexOf('.')), f]));
                     
-                    let videoNames = Object.keys(groupedFiles);
+                    let videoNames = Array.from(new Set([
+                        ...Object.keys(groupedFiles),
+                        ...projectVideoFiles.map(f => f.name.substring(0, f.name.lastIndexOf('.')))
+                    ]));
                     videoNames.sort((a, b) => {
                         if (sortBy === 'name-asc') return a.localeCompare(b);
                         if (sortBy === 'name-desc') return b.localeCompare(a);
@@ -5284,7 +5294,7 @@
                             continue;
                         }
 
-                        const files = groupedFiles[videoName].sort((a, b) => {
+                        const files = (groupedFiles[videoName] || []).sort((a, b) => {
                             const aNum = parseInt(a.name.substring(a.name.lastIndexOf('_') + 1));
                             const bNum = parseInt(b.name.substring(b.name.lastIndexOf('_') + 1));
                             return aNum - bNum;
@@ -5527,7 +5537,10 @@
                     if (!allProjectFolders.some(p => p.handle === subfolderHandle)) {
                         allProjectFolders.push({ handle: subfolderHandle, path: subfolderName, name: subfolderName, isProject: true });
                     }
-                    const editDirHandle = await findDirectoryHandleByName(subfolderHandle, 'Edit Thumbnails');
+                    let editDirHandle = null;
+                    try {
+                        editDirHandle = await findDirectoryHandleByName(subfolderHandle, 'Edit Thumbnails');
+                    } catch (e) {}
 
                     const canvasId = getNextCanvasId();
                     const canvasElements = [];
@@ -5543,13 +5556,15 @@
                         const videoNameWithoutExt = videoBaseName.substring(0, videoBaseName.lastIndexOf('.'));
 
                         const landscapeFiles = [];
-                        for await (const entry of editDirHandle.values()) {
-                            if (entry.kind === 'file' && entry.name.startsWith(videoNameWithoutExt)) {
-                                landscapeFiles.push(await entry.getFile());
+                        if (editDirHandle) {
+                            for await (const entry of editDirHandle.values()) {
+                                if (entry.kind === 'file' && entry.name.startsWith(videoNameWithoutExt)) {
+                                    landscapeFiles.push(await entry.getFile());
+                                }
                             }
                         }
 
-                        if (landscapeFiles.length > 0) {
+                        if (true) {
                              landscapeFiles.sort((a, b) => {
                                 const aNum = parseInt(a.name.substring(a.name.lastIndexOf('_') + 1));
                                 const bNum = parseInt(b.name.substring(b.name.lastIndexOf('_') + 1));
@@ -5740,7 +5755,12 @@
                 try {
                     await findDirectoryHandleByName(dirHandle, 'Edit Thumbnails');
                     isProject = true;
-                } catch (e) {}
+                } catch (e) {
+                    try {
+                        await dirHandle.getFileHandle('scdate.txt');
+                        isProject = true;
+                    } catch (e2) {}
+                }
 
                 allDiscoveredFolders.push({
                     handle: dirHandle,
@@ -5974,13 +5994,15 @@
                         dateInfo.textContent = `Created: ${new Date(videoFile.lastModified).toLocaleString()}`;
                         
                         const videoBaseName = video.name.substring(0, video.name.lastIndexOf('.'));
-                        const editDirHandle = await findDirectoryHandleByName(project.handle, 'Edit Thumbnails');
                         const thumbnailFiles = [];
-                        for await (const entry of editDirHandle.values()) {
-                            if (entry.kind === 'file' && entry.name.startsWith(videoBaseName)) {
-                                thumbnailFiles.push(await entry.getFile());
+                        try {
+                            const editDirHandle = await findDirectoryHandleByName(project.handle, 'Edit Thumbnails');
+                            for await (const entry of editDirHandle.values()) {
+                                if (entry.kind === 'file' && entry.name.startsWith(videoBaseName)) {
+                                    thumbnailFiles.push(await entry.getFile());
+                                }
                             }
-                        }
+                        } catch (e) {}
 
                         thumbnailFiles.sort((a, b) => {
                             const aNum = parseInt(a.name.substring(a.name.lastIndexOf('_') + 1));
