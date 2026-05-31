@@ -5196,30 +5196,6 @@
                     const canvasElements = [];
                     let mostRecentShortcutTime = project.timestamp || 0;
 
-                    const projectVideoFiles = [];
-                    // Recursively find videos in subfolders
-                    async function findVideos(dirHandle, subfolder = '') {
-                        for await (const entry of dirHandle.values()) {
-                            if (entry.kind === 'file' && entry.name.match(/\.(mp4|avi|mov|mkv)$/i)) {
-                                try {
-                                    const file = await entry.getFile();
-                                    if (!isNewOnly || file.lastModified > mostRecentShortcutTime) {
-                                        // Store additional path info on the file object
-                                        file.subfolder = subfolder;
-                                        file.projectPath = project.path;
-                                        projectVideoFiles.push(file);
-                                    }
-                                } catch (fileErr) {
-                                    console.warn(`Could not get file for ${entry.name}:`, fileErr);
-                                }
-                            } else if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                                await findVideos(entry, subfolder ? `${subfolder}\\${entry.name}` : entry.name);
-                            }
-                        }
-                    }
-                    await findVideos(project.handle);
-                    allVideoFiles.push(...projectVideoFiles);
-
                     let landscapeFiles = [];
                     try {
                         const editDirHandle = await findDirectoryHandleByName(project.handle, 'Edit Thumbnails');
@@ -5239,6 +5215,43 @@
                         }
                         return acc;
                     }, {});
+
+                    const projectVideoFiles = [];
+                    // Recursively find videos in subfolders
+                    async function findVideos(dirHandle, subfolder = '') {
+                        for await (const entry of dirHandle.values()) {
+                            if (entry.kind === 'file' && entry.name.match(/\.(mp4|avi|mov|mkv)$/i)) {
+                                try {
+                                    const file = await entry.getFile();
+                                    const videoBaseName = file.name.substring(0, file.name.lastIndexOf('.'));
+                                    const hasThumbnails = groupedFiles[videoBaseName] && groupedFiles[videoBaseName].length > 0;
+                                    const hasProjectSc = checkShortcut(file.name, projectScData);
+                                    const hasRootSc = checkShortcut(file.name, rootProjectShortcutsSet);
+
+                                    let isNew = file.lastModified > mostRecentShortcutTime;
+                                    if (isNewOnly && !isNew && mostRecentShortcutTime > 0) {
+                                        // If it's an old file but has no thumbnails and no shortcuts, it's probably newly moved in
+                                        if (!hasThumbnails && !hasProjectSc && !hasRootSc) {
+                                            isNew = true;
+                                        }
+                                    }
+
+                                    if (!isNewOnly || isNew) {
+                                        // Store additional path info on the file object
+                                        file.subfolder = subfolder;
+                                        file.projectPath = project.path;
+                                        projectVideoFiles.push(file);
+                                    }
+                                } catch (fileErr) {
+                                    console.warn(`Could not get file for ${entry.name}:`, fileErr);
+                                }
+                            } else if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
+                                await findVideos(entry, subfolder ? `${subfolder}\\${entry.name}` : entry.name);
+                            }
+                        }
+                    }
+                    await findVideos(project.handle);
+                    allVideoFiles.push(...projectVideoFiles);
 
                     const videoFileMap = new Map(projectVideoFiles.map(f => [f.name.substring(0, f.name.lastIndexOf('.')), f]));
                     
