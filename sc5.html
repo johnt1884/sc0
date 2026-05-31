@@ -3501,6 +3501,17 @@
             throw new Error(`Directory '${name}' not found.`);
         }
 
+        async function hasVideosInDir(dirHandle) {
+            try {
+                for await (const entry of dirHandle.values()) {
+                    if (entry.kind === 'file' && entry.name.match(/\.(mp4|avi|mov|mkv)$/i)) {
+                        return true;
+                    }
+                }
+            } catch (e) {}
+            return false;
+        }
+
         function setVisibilityForMode(mode) {
             const checkboxContainers = document.querySelectorAll('.checkbox-container');
 
@@ -4813,10 +4824,10 @@
             return rotationMap;
         }
 
-        async function getScDataForProject(projectHandle) {
+        async function getScDataForProject(projectHandle, projectPath, allProjectPaths) {
             const allShortcuts = new Set();
             
-            async function scanDir(dirHandle) {
+            async function scanDir(dirHandle, currentSubPath) {
                 try {
                     const handle = await dirHandle.getFileHandle('scdata.txt');
                     const file = await handle.getFile();
@@ -4826,12 +4837,15 @@
 
                 for await (const entry of dirHandle.values()) {
                     if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                        await scanDir(entry);
+                        const newPath = currentSubPath ? `${currentSubPath}\\${entry.name}` : entry.name;
+                        const fullPath = projectPath ? `${projectPath}\\${newPath}` : newPath;
+                        if (allProjectPaths.has(fullPath)) continue;
+                        await scanDir(entry, newPath);
                     }
                 }
             }
             
-            await scanDir(projectHandle);
+            await scanDir(projectHandle, "");
             console.log(`Loaded ${allShortcuts.size} shortcuts from project (recursive): ${projectHandle.name}`);
             return allShortcuts;
         }
@@ -4953,7 +4967,15 @@
                 try {
                     await findDirectoryHandleByName(dirHandle, 'Edit Thumbnails');
                     isProject = true;
-                } catch (e) {}
+                } catch (e) {
+                    try {
+                        await dirHandle.getFileHandle('scdate.txt');
+                        // Only consider scdate.txt a project marker if it's not the root or it has videos
+                        if (currentPath !== '' || (await hasVideosInDir(dirHandle))) {
+                            isProject = true;
+                        }
+                    } catch (e2) {}
+                }
 
                 allDiscoveredFolders.push({
                     handle: dirHandle,
@@ -4974,33 +4996,33 @@
                         name: dirHandle.name,
                         timestamp: timestamp 
                     });
-                    
-                    // If it's a project, we don't look for nested projects (matching original behavior)
-                    // But we still want to find all subfolders for the move list
-                    for await (const entry of dirHandle.values()) {
-                        if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                            const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
-                            await scanFolders(entry, newPath, false, true);
-                        }
-                    }
-                } else {
-                    for await (const entry of dirHandle.values()) {
-                        if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                            const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
-                            await scanFolders(entry, newPath, findProjects, insideProject);
-                        }
+                }
+
+                // Always recurse into subdirectories to find nested projects or subfolders for Move-To
+                for await (const entry of dirHandle.values()) {
+                    if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
+                        const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
+                        await scanFolders(entry, newPath, findProjects, isProject || insideProject);
                     }
                 }
             }
             
             await scanFolders(currentDirHandle, '');
             projectFolders.sort((a, b) => a.name.localeCompare(b.name));
+            const projectPaths = new Set(projectFolders.map(p => p.path));
 
             let isProject = false;
             try {
                 await findDirectoryHandleByName(currentDirHandle, 'Edit Thumbnails');
                 isProject = true;
-            } catch (e) {}
+            } catch (e) {
+                try {
+                    await currentDirHandle.getFileHandle('scdate.txt');
+                    if (await hasVideosInDir(currentDirHandle)) {
+                        isProject = true;
+                    }
+                } catch (e2) {}
+            }
 
             let rootScData = new Map();
             let currentDirScData = new Map();
@@ -5098,7 +5120,14 @@
                     try {
                         await findDirectoryHandleByName(dirHandle, 'Edit Thumbnails');
                         isProject = true;
-                    } catch (e) {}
+                    } catch (e) {
+                        try {
+                            await dirHandle.getFileHandle('scdate.txt');
+                            if (currentPath !== '' || (await hasVideosInDir(dirHandle))) {
+                                isProject = true;
+                            }
+                        } catch (e2) {}
+                    }
 
                     rootDiscoveredFolders.push({
                         handle: dirHandle,
@@ -5108,19 +5137,11 @@
                         insideProject: insideProject
                     });
 
-                    if (isProject && findProjects) {
-                        for await (const entry of dirHandle.values()) {
-                            if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                                const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
-                                await scanRootFolders(entry, newPath, false, true);
-                            }
-                        }
-                    } else {
-                        for await (const entry of dirHandle.values()) {
-                            if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                                const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
-                                await scanRootFolders(entry, newPath, findProjects, insideProject);
-                            }
+                    // Always recurse into subdirectories
+                    for await (const entry of dirHandle.values()) {
+                        if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
+                            const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
+                            await scanRootFolders(entry, newPath, findProjects, isProject || insideProject);
                         }
                     }
                 }
@@ -5155,7 +5176,7 @@
                 try {
                     console.log(`Processing project: ${project.name} (Path: ${project.path})`);
                     await getMiscData(project.handle, project.path);
-                    const projectScData = await getScDataForProject(project.handle);
+                    const projectScData = await getScDataForProject(project.handle, project.path, projectPaths);
                     const projectRotationData = await getRotationData(project.handle);
                     
                     const normalizedProjectName = normalizeProjectKey(project.name);
@@ -5170,37 +5191,15 @@
                     const canvasElements = [];
                     let mostRecentShortcutTime = project.timestamp || 0;
 
-                    const projectVideoFiles = [];
-                    // Recursively find videos in subfolders
-                    async function findVideos(dirHandle, subfolder = '') {
-                        for await (const entry of dirHandle.values()) {
-                            if (entry.kind === 'file' && entry.name.match(/\.(mp4|avi|mov|mkv)$/i)) {
-                                try {
-                                    const file = await entry.getFile();
-                                    if (!isNewOnly || file.lastModified > mostRecentShortcutTime) {
-                                        // Store additional path info on the file object
-                                        file.subfolder = subfolder;
-                                        file.projectPath = project.path;
-                                        projectVideoFiles.push(file);
-                                    }
-                                } catch (fileErr) {
-                                    console.warn(`Could not get file for ${entry.name}:`, fileErr);
-                                }
-                            } else if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                                await findVideos(entry, subfolder ? `${subfolder}\\${entry.name}` : entry.name);
+                    let landscapeFiles = [];
+                    try {
+                        const editDirHandle = await findDirectoryHandleByName(project.handle, 'Edit Thumbnails');
+                        for await (const entry of editDirHandle.values()) {
+                            if (entry.kind === 'file' && entry.name.match(/\.(jpe?g|png|gif|webp)$/i)) {
+                                landscapeFiles.push(await entry.getFile());
                             }
                         }
-                    }
-                    await findVideos(project.handle);
-                    allVideoFiles.push(...projectVideoFiles);
-
-                    const editDirHandle = await findDirectoryHandleByName(project.handle, 'Edit Thumbnails');
-                    const landscapeFiles = [];
-                     for await (const entry of editDirHandle.values()) {
-                        if (entry.kind === 'file' && entry.name.match(/\.(jpe?g|png|gif|webp)$/i)) {
-                            landscapeFiles.push(await entry.getFile());
-                        }
-                    }
+                    } catch (e) {}
 
                     const groupedFiles = landscapeFiles.reduce((acc, file) => {
                         const match = file.name.match(/^(.*?)_(\d+)\.[^.]+$/);
@@ -5212,9 +5211,51 @@
                         return acc;
                     }, {});
 
+                    const projectVideoFiles = [];
+                    // Recursively find videos in subfolders
+                    async function findVideos(dirHandle, subfolder = '') {
+                        for await (const entry of dirHandle.values()) {
+                            if (entry.kind === 'file' && entry.name.match(/\.(mp4|avi|mov|mkv)$/i)) {
+                                try {
+                                    const file = await entry.getFile();
+                                    const videoBaseName = file.name.substring(0, file.name.lastIndexOf('.'));
+                                    const hasThumbnails = groupedFiles[videoBaseName] && groupedFiles[videoBaseName].length > 0;
+                                    const hasProjectSc = checkShortcut(file.name, projectScData);
+
+                                    let isNew = file.lastModified > mostRecentShortcutTime;
+                                    if (isNewOnly && !isNew && mostRecentShortcutTime > 0) {
+                                        // If it's an old file but has no thumbnails and no shortcuts, it's probably newly moved in
+                                        if (!hasThumbnails && !hasProjectSc) {
+                                            isNew = true;
+                                        }
+                                    }
+
+                                    if (!isNewOnly || isNew) {
+                                        // Store additional path info on the file object
+                                        file.subfolder = subfolder;
+                                        file.projectPath = project.path;
+                                        projectVideoFiles.push(file);
+                                    }
+                                } catch (fileErr) {
+                                    console.warn(`Could not get file for ${entry.name}:`, fileErr);
+                                }
+                            } else if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
+                                const newSubfolder = subfolder ? `${subfolder}\\${entry.name}` : entry.name;
+                                const fullPath = project.path ? `${project.path}\\${newSubfolder}` : newSubfolder;
+                                if (projectPaths.has(fullPath)) continue;
+                                await findVideos(entry, newSubfolder);
+                            }
+                        }
+                    }
+                    await findVideos(project.handle);
+                    allVideoFiles.push(...projectVideoFiles);
+
                     const videoFileMap = new Map(projectVideoFiles.map(f => [f.name.substring(0, f.name.lastIndexOf('.')), f]));
                     
-                    let videoNames = Object.keys(groupedFiles);
+                    let videoNames = Array.from(new Set([
+                        ...Object.keys(groupedFiles),
+                        ...projectVideoFiles.map(f => f.name.substring(0, f.name.lastIndexOf('.')))
+                    ]));
                     videoNames.sort((a, b) => {
                         if (sortBy === 'name-asc') return a.localeCompare(b);
                         if (sortBy === 'name-desc') return b.localeCompare(a);
@@ -5284,7 +5325,7 @@
                             continue;
                         }
 
-                        const files = groupedFiles[videoName].sort((a, b) => {
+                        const files = (groupedFiles[videoName] || []).sort((a, b) => {
                             const aNum = parseInt(a.name.substring(a.name.lastIndexOf('_') + 1));
                             const bNum = parseInt(b.name.substring(b.name.lastIndexOf('_') + 1));
                             return aNum - bNum;
@@ -5527,7 +5568,10 @@
                     if (!allProjectFolders.some(p => p.handle === subfolderHandle)) {
                         allProjectFolders.push({ handle: subfolderHandle, path: subfolderName, name: subfolderName, isProject: true });
                     }
-                    const editDirHandle = await findDirectoryHandleByName(subfolderHandle, 'Edit Thumbnails');
+                    let editDirHandle = null;
+                    try {
+                        editDirHandle = await findDirectoryHandleByName(subfolderHandle, 'Edit Thumbnails');
+                    } catch (e) {}
 
                     const canvasId = getNextCanvasId();
                     const canvasElements = [];
@@ -5543,20 +5587,21 @@
                         const videoNameWithoutExt = videoBaseName.substring(0, videoBaseName.lastIndexOf('.'));
 
                         const landscapeFiles = [];
-                        for await (const entry of editDirHandle.values()) {
-                            if (entry.kind === 'file' && entry.name.startsWith(videoNameWithoutExt)) {
-                                landscapeFiles.push(await entry.getFile());
+                        if (editDirHandle) {
+                            for await (const entry of editDirHandle.values()) {
+                                if (entry.kind === 'file' && entry.name.startsWith(videoNameWithoutExt)) {
+                                    landscapeFiles.push(await entry.getFile());
+                                }
                             }
                         }
 
-                        if (landscapeFiles.length > 0) {
-                             landscapeFiles.sort((a, b) => {
-                                const aNum = parseInt(a.name.substring(a.name.lastIndexOf('_') + 1));
-                                const bNum = parseInt(b.name.substring(b.name.lastIndexOf('_') + 1));
-                                return aNum - bNum;
-                            });
+                        landscapeFiles.sort((a, b) => {
+                            const aNum = parseInt(a.name.substring(a.name.lastIndexOf('_') + 1));
+                            const bNum = parseInt(b.name.substring(b.name.lastIndexOf('_') + 1));
+                            return aNum - bNum;
+                        });
 
-                            let realVideoName = videoBaseName;
+                        let realVideoName = videoBaseName;
                             let videoDate = 'Unknown';
                             try {
                                 for await (const entry of subfolderHandle.values()) {
@@ -5740,7 +5785,15 @@
                 try {
                     await findDirectoryHandleByName(dirHandle, 'Edit Thumbnails');
                     isProject = true;
-                } catch (e) {}
+                } catch (e) {
+                    try {
+                        await dirHandle.getFileHandle('scdate.txt');
+                        // Only consider scdate.txt a project marker if it's not the root or it has videos
+                        if (currentPath !== '' || (await hasVideosInDir(dirHandle))) {
+                            isProject = true;
+                        }
+                    } catch (e2) {}
+                }
 
                 allDiscoveredFolders.push({
                     handle: dirHandle,
@@ -5756,24 +5809,18 @@
                         path: currentPath, 
                         name: dirHandle.name 
                     });
-                    
-                    for await (const entry of dirHandle.values()) {
-                        if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                            const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
-                            await scanFolders(entry, newPath, false, true);
-                        }
-                    }
-                } else {
-                    for await (const entry of dirHandle.values()) {
-                        if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                            const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
-                            await scanFolders(entry, newPath, findProjects, insideProject);
-                        }
+                }
+
+                for await (const entry of dirHandle.values()) {
+                    if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
+                        const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
+                        await scanFolders(entry, newPath, findProjects, isProject || insideProject);
                     }
                 }
             }
             
             await scanFolders(currentDirHandle, '');
+            const projectPaths = new Set(projectFolders.map(p => p.path));
 
             if (g_rootHandle) {
                 const rootDiscoveredFolders = [];
@@ -5782,7 +5829,14 @@
                     try {
                         await findDirectoryHandleByName(dirHandle, 'Edit Thumbnails');
                         isProject = true;
-                    } catch (e) {}
+                    } catch (e) {
+                        try {
+                            await dirHandle.getFileHandle('scdate.txt');
+                            if (currentPath !== '' || (await hasVideosInDir(dirHandle))) {
+                                isProject = true;
+                            }
+                        } catch (e2) {}
+                    }
 
                     rootDiscoveredFolders.push({
                         handle: dirHandle,
@@ -5792,19 +5846,11 @@
                         insideProject: insideProject
                     });
 
-                    if (isProject && findProjects) {
-                        for await (const entry of dirHandle.values()) {
-                            if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                                const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
-                                await scanRootFolders(entry, newPath, false, true);
-                            }
-                        }
-                    } else {
-                        for await (const entry of dirHandle.values()) {
-                            if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                                const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
-                                await scanRootFolders(entry, newPath, findProjects, insideProject);
-                            }
+                    // Always recurse into subdirectories
+                    for await (const entry of dirHandle.values()) {
+                        if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
+                            const newPath = currentPath ? `${currentPath}\\${entry.name}` : entry.name;
+                            await scanRootFolders(entry, newPath, findProjects, isProject || insideProject);
                         }
                     }
                 }
@@ -5848,7 +5894,7 @@
 
             for (const project of projectFolders) {
                 try {
-                    const projectShortcuts = await getScDataForProject(project.handle);
+                    const projectShortcuts = await getScDataForProject(project.handle, project.path, projectPaths);
                     const subfolderScCount = projectShortcuts.size;
 
                     const normalizedProjectName = normalizeProjectKey(project.name);
@@ -5872,7 +5918,10 @@
                                 entry.subfolder = subfolder;
                                 videoFiles.push(entry);
                             } else if (entry.kind === 'directory' && !skipDirs.has(entry.name.toLowerCase())) {
-                                await findVideos(entry, subfolder ? `${subfolder}\\${entry.name}` : entry.name);
+                                const newSubfolder = subfolder ? `${subfolder}\\${entry.name}` : entry.name;
+                                const fullPath = project.path ? `${project.path}\\${newSubfolder}` : newSubfolder;
+                                if (projectPaths.has(fullPath)) continue;
+                                await findVideos(entry, newSubfolder);
                             }
                         }
                     }
@@ -5974,13 +6023,15 @@
                         dateInfo.textContent = `Created: ${new Date(videoFile.lastModified).toLocaleString()}`;
                         
                         const videoBaseName = video.name.substring(0, video.name.lastIndexOf('.'));
-                        const editDirHandle = await findDirectoryHandleByName(project.handle, 'Edit Thumbnails');
                         const thumbnailFiles = [];
-                        for await (const entry of editDirHandle.values()) {
-                            if (entry.kind === 'file' && entry.name.startsWith(videoBaseName)) {
-                                thumbnailFiles.push(await entry.getFile());
+                        try {
+                            const editDirHandle = await findDirectoryHandleByName(project.handle, 'Edit Thumbnails');
+                            for await (const entry of editDirHandle.values()) {
+                                if (entry.kind === 'file' && entry.name.startsWith(videoBaseName)) {
+                                    thumbnailFiles.push(await entry.getFile());
+                                }
                             }
-                        }
+                        } catch (e) {}
 
                         thumbnailFiles.sort((a, b) => {
                             const aNum = parseInt(a.name.substring(a.name.lastIndexOf('_') + 1));
